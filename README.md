@@ -1,7 +1,7 @@
 # MUCUS — Media Universal Compression Utility Script
 <img src="https://github.com/josephOfTheWest/mucus/blob/main/MUCUS_logo.svg" alt="Image of a film reel squeezed by belt spewing mucus" height="250" width="205" />
 
-MUCUS - Media Universal Compression Utility Script - a versatile collection of scripts to automate FFMPEG conversion of media for compression and archival authored with the help of Cluade Code.
+MUCUS - Media Universal Compression Utility Script - a versatile collection of scripts to automate FFMPEG conversion of media for compression and archival authored with the help of Claude Code.
 
 MUCUS can batch re-encodes video files to AV1 using FFmpeg, with automatic hardware acceleration detection, parallel encoding, smart resume, and detailed logging.
 
@@ -61,6 +61,8 @@ Full path to the directory containing source video files. Scanned recursively. S
 
 Full path to the directory where re-encoded files will be written. The source directory structure is mirrored in the target. All output files are written as `.mkv` with an AV1 video stream.
 
+> **Note:** The path is fully normalised at startup (relative paths are resolved against the current working directory). Source and target directories must not overlap — the script will abort if one is a subdirectory of the other, or if they are the same path.
+
 ---
 
 ### `-LogDirectory` `<string>` — Default: `.\encode_logs`
@@ -71,7 +73,7 @@ Full path to the directory where log files will be written. A timestamp suffix i
 - `encode_session_<timestamp>.log` — Master session log with all events and a final summary table
 - `<relative_path>\<filename>_encode.log` — Per-file FFmpeg output log (mirrors source structure)
 - `ErrorLog_<timestamp>.log` — Error/warn log (only when `-ExportError` is set; see below)
-- `FileList_<timestamp>.csv` — Results spreadsheet (only when `-ExportList` is `$true`; see below)
+- `FileList_<timestamp>.csv` — Results spreadsheet (written by default; suppressed with `-NoExportList`)
 
 ---
 
@@ -139,9 +141,9 @@ Action to take on the **source** file after each successful encode.
 
 ---
 
-### `-ExportList` `<bool>` — Default: `$true`
+### `-NoExportList` `[switch]`
 
-When `$true`, exports a per-file results spreadsheet to the log directory at the end of the session.
+When specified, suppresses the per-file CSV results export at the end of the session. By default the export is always written.
 
 **File name:** `FileList_<timestamp>.csv`
 
@@ -159,8 +161,6 @@ When `$true`, exports a per-file results spreadsheet to the log directory at the
 | Savings | Percentage size reduction (`N/A` for skipped/failed files) |
 
 A **TOTAL** row is appended as the final entry with aggregate sizes and overall savings percentage.
-
-Pass `-ExportList $false` to suppress the export.
 
 ---
 
@@ -182,7 +182,7 @@ This is useful for quickly identifying problems in large batch runs without scan
 
 ### `-WhatIf` `[switch]`
 
-Simulates the entire run without encoding any files or modifying the filesystem. All decisions (skip, encode, resume, collision detection) are logged to the console and the master log file, but no FFmpeg processes are started and no source files are touched. Bypasses the destructive action confirmation prompt.
+Simulates the entire run without encoding any files or modifying the filesystem. All decisions (skip, encode, resume, collision detection, no-savings copy/move) are logged to the console and the master log file, but no FFmpeg processes are started and no source files are touched. Bypasses the destructive action confirmation prompt.
 
 ---
 
@@ -277,9 +277,14 @@ The number of simultaneous encodes is automatically calculated from available GP
 
 ## Pre-encode Size Prediction
 
-Before encoding each file, MUCUS uses a **bits-per-pixel (bpp)** metric to predict whether the encode is likely to produce a smaller file. Sources that are already efficiently encoded (low bpp) are marked as `Likely-NoSavings` and skipped, saving time on files where AV1 re-encoding would not reduce size.
+Before encoding each file, MUCUS checks two conservative criteria to predict whether re-encoding is likely to produce a smaller file:
 
-The bpp threshold used is based on the content type profile's target quality level.
+1. **Source is already AV1** — always skipped (re-encoding AV1→AV1 at the same quality level will not reduce size).
+2. **Source is HEVC or VP9 with a bits-per-pixel (bpp) value below `0.003`** — already efficiently encoded; AV1 rarely beats this threshold.
+
+All other codecs (H.264, MPEG-2, etc.) always proceed to encode. Files matching either criterion are marked `Skipped-LikelyNoSavings` and the `OnComplete` action is applied directly to the source (copy, move, or no-op), consistent with the post-encode no-savings behaviour.
+
+> **Note:** `-WhatIf` fully honours this path — no files are copied or moved in a dry run.
 
 ---
 
@@ -346,8 +351,8 @@ This preserves the original media dates in the re-encoded archive.
 | `Success` | Encoded successfully and output is smaller than source |
 | `Success-NoSavings` | Encoded successfully but output is not smaller; source used instead |
 | `Resumed` | Target already existed and was validated as a complete re-encode |
-| `AlreadyAV1` | Source was already an AV1 MKV; copied/moved per `OnComplete` |
-| `Likely-NoSavings` | Pre-encode bpp check predicted no savings; encoding skipped |
+| `AlreadyAV1MKV` | Source was already an AV1 MKV; copied/moved per `OnComplete` |
+| `Skipped-LikelyNoSavings` | Pre-encode check predicted no savings; encoding skipped |
 | `Skipped-ProbeError` | FFprobe could not read the source file |
 | `Failed` | FFmpeg encode process failed |
 
@@ -380,7 +385,7 @@ mucus -SourceDirectory "D:\GoPro" -TargetDirectory "E:\Archive" -WhatIf
 
 # Suppress the CSV export
 mucus -SourceDirectory "D:\Videos" -TargetDirectory "E:\Archive" `
-      -ExportList $false
+      -NoExportList
 
 # Show built-in help
 mucus -help
@@ -396,7 +401,7 @@ All output files are written to a timestamped subdirectory of `-LogDirectory` (e
 |---|---|
 | `encode_session_<timestamp>.log` | Always |
 | `<path>\<file>_encode.log` | For every file that goes through FFmpeg |
-| `FileList_<timestamp>.csv` | `-ExportList $true` (default) |
+| `FileList_<timestamp>.csv` | Always, unless `-NoExportList` is specified |
 | `ErrorLog_<timestamp>.log` | `-ExportError WARN` or `-ExportError ERROR` |
 
 The master log contains a final summary table with per-file status, source/target sizes, savings percentages, and aggregate totals.

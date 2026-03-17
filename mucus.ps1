@@ -108,7 +108,7 @@ function mucus {
         [string]$Content = 'General',
 
         [Parameter(Mandatory = $false)]
-        [bool]$ExportList = $true,
+        [switch]$NoExportList,
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('NONE','WARN','ERROR')]
@@ -180,13 +180,12 @@ PARAMETERS
         Simulate the run without encoding or modifying any files. All decisions are
         logged but no FFmpeg processes are started and no source files are touched.
 
-    -ExportList       <bool>    [Default: True]
-        When True (default), exports the per-file results to a CSV file in the
-        LogDirectory at the end of the session.  The file is named:
-            FileList_<yyyyMMdd_HHmmss>.csv
+    -NoExportList     [switch]
+        When specified, suppresses the per-file CSV export at the end of the
+        session.  By default a CSV named FileList_<yyyyMMdd_HHmmss>.csv is
+        written to the LogDirectory.
         Columns: File, Status, Src Action, Target Action, Src Size, Tgt Size, Savings.
         A Total row is appended as the final entry.
-        Pass -ExportList $false to suppress the export.
 
     -ExportError      <string>  [Default: NONE]  Values: NONE, WARN, ERROR
         Controls whether a separate error log file is written to the LogDirectory.
@@ -651,7 +650,16 @@ EXAMPLES
     Write-Host "[INFO] Preset override  : $(if ($hasPresetOverride) { $Preset } else { 'none — using profile default' })" -ForegroundColor Cyan
 
     $SourceDirectory = (Resolve-Path $SourceDirectory).Path.TrimEnd('\')
-    $TargetDirectory = $TargetDirectory.TrimEnd('\')
+    $TargetDirectory = [System.IO.Path]::GetFullPath($TargetDirectory, (Get-Location).Path).TrimEnd('\')
+
+    if ([string]::Equals($SourceDirectory, $TargetDirectory, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $TargetDirectory.StartsWith($SourceDirectory + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+        $SourceDirectory.StartsWith($TargetDirectory + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host "[ERROR] SourceDirectory and TargetDirectory must not overlap (one cannot be inside the other)." -ForegroundColor Red
+        Write-Host "        Source : $SourceDirectory" -ForegroundColor Yellow
+        Write-Host "        Target : $TargetDirectory" -ForegroundColor Yellow
+        return
+    }
 
     # Stamp the log root so concurrent or repeated runs never share the same directory
     $sessionStamp  = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -687,7 +695,9 @@ EXAMPLES
     Write-Log "  Target     : $TargetDirectory"                            -Level INFO -LogFile $masterLogPath
     Write-Log "  Logs       : $LogDirectory"                               -Level INFO -LogFile $masterLogPath
     Write-Log "  HW Stack   : $selectedStack ($hwVendor)"                   -Level INFO -LogFile $masterLogPath
-    Write-Log "  Decode     : $decodeLabel"                                -Level INFO -LogFile $masterLogPath
+    Write-Log "  Decode     : $decodeLabel"                                 -Level INFO -LogFile $masterLogPath
+    Write-Log "  HW APIs    : $(if ($apiList) { $apiList } else { 'none detected' })"          -Level INFO -LogFile $masterLogPath
+    Write-Log "  AV1 Encs   : $(if ($encList) { $encList } else { 'none' })"                  -Level INFO -LogFile $masterLogPath
     Write-Log "  Content    : $Content (profile resolved per-file from source resolution)" -Level INFO -LogFile $masterLogPath
     Write-Log "  CQ         : $(if ($hasCQOverride) { "$CQ (CLI override)" } else { 'profile default (per-file)' })" -Level INFO -LogFile $masterLogPath
     Write-Log "  Preset     : $(if ($hasPresetOverride) { "$Preset (CLI override)" } else { 'profile default (per-file)' })" -Level INFO -LogFile $masterLogPath
@@ -992,6 +1002,8 @@ EXAMPLES
                     }
                 }
                 finally { if ($acquired) { $mx.ReleaseMutex() } }
+            } else {
+                Write-Host "[$ts] [WARN] Log mutex unavailable — file log entry dropped: $Msg" -ForegroundColor Yellow
             }
             switch ($Level) {
                 'INFO'    { Write-Host $entry -ForegroundColor Cyan    }
@@ -1022,19 +1034,6 @@ EXAMPLES
         $fileLogDir     = Join-Path $logRoot $relativeLogDir
         $fileLogPath    = Join-Path $fileLogDir "${baseName}_encode_$sessionId.log"
 
-        foreach ($d in @($targetDir, $fileLogDir)) {
-            if (-not (Test-Path $d)) {
-                try {
-                    New-Item -ItemType Directory -Path $d -Force -ErrorAction Stop | Out-Null
-                } catch {
-                    pLog "ERROR — Could not create directory '$d': $($_.Exception.Message)" -Level ERROR -LogFile $masterLog
-                    $result.Status       = 'Exception'
-                    $result.TargetAction = 'Failed'
-                    return $result
-                }
-            }
-        }
-
         # Result record
         $result = [ordered]@{
             RelativePath = $relativePath
@@ -1048,6 +1047,19 @@ EXAMPLES
             Transcoded   = $false
             Status       = 'Pending'
             SavingsPct   = 0.0
+        }
+
+        foreach ($d in @($targetDir, $fileLogDir)) {
+            if (-not (Test-Path $d)) {
+                try {
+                    New-Item -ItemType Directory -Path $d -Force -ErrorAction Stop | Out-Null
+                } catch {
+                    pLog "ERROR — Could not create directory '$d': $($_.Exception.Message)" -Level ERROR -LogFile $masterLog
+                    $result.Status       = 'Exception'
+                    $result.TargetAction = 'Failed'
+                    return $result
+                }
+            }
         }
 
         # ----------------------------------------------------------------------
@@ -1084,7 +1096,7 @@ EXAMPLES
         # Falls back to HD tier if dimensions are unavailable from FFprobe.
         $srcWidth   = [int]($videoStream.width)
         $srcHeight  = [int]($videoStream.height)
-        $pixelCount = $srcWidth * $srcHeight
+        $pixelCount = [long]$srcWidth * [long]$srcHeight
 
         $resTier = if      ($pixelCount -gt 8847360) { '8K+' }   # > DCI 4K
                    elseif  ($pixelCount -gt 3686400) { '4K'  }   # > QHD
@@ -1165,10 +1177,10 @@ EXAMPLES
                     '-crf',    $effectiveCQ.ToString(),
                     '-preset', $svtPreset.ToString(),
                     '-svtav1-params', "lookahead=$([math]::Min($fileProfile.RcLookahead, 120))"
+                ))
                 if ($fileProfile.RcLookahead -gt 120) {
                     pLog "INFO [$relativePath] — RcLookahead $($fileProfile.RcLookahead) clamped to 120 (SVT-AV1 maximum)." -Level INFO -LogFile $masterLog
                 }
-                ))
             }
             'SW-LIBAOM' {
                 $cpuUsed = @{ p1=8; p2=7; p3=6; p4=5; p5=4; p6=2; p7=0 }[$effectivePreset]
@@ -1281,11 +1293,12 @@ EXAMPLES
         }
 
         # Prefer stream-level bit_rate; fall back to container-level
-        $srcBitsPerSec = 0.0
-        if ($videoStream.bit_rate -and [double]::TryParse([string]$videoStream.bit_rate, [ref]$null)) {
-            $srcBitsPerSec = [double]$videoStream.bit_rate
-        } elseif ($probeData.format.bit_rate -and [double]::TryParse([string]$probeData.format.bit_rate, [ref]$null)) {
-            $srcBitsPerSec = [double]$probeData.format.bit_rate
+        $srcBitsPerSec  = 0.0
+        $parsedBitrate  = 0.0
+        if ($videoStream.bit_rate -and [double]::TryParse([string]$videoStream.bit_rate, [ref]$parsedBitrate)) {
+            $srcBitsPerSec = $parsedBitrate
+        } elseif ($probeData.format.bit_rate -and [double]::TryParse([string]$probeData.format.bit_rate, [ref]$parsedBitrate)) {
+            $srcBitsPerSec = $parsedBitrate
         }
 
         # bpp = bits_per_second / (width × height × fps)
@@ -1312,32 +1325,46 @@ EXAMPLES
             $result.Status     = 'Skipped-LikelyNoSavings'
             $result.SourceSize = $sourceFile.Length
 
-            try {
-                New-Item -ItemType Directory -Path (Split-Path $targetFile -Parent) -Force -ErrorAction Stop | Out-Null
-            } catch {
-                pLog "ERROR — Could not create target directory: $($_.Exception.Message)" -Level ERROR -LogFile $masterLog
-                $result.Status       = 'Exception'
-                $result.TargetAction = 'Failed'
-                return $result
+            if (-not $whatIf) {
+                try {
+                    New-Item -ItemType Directory -Path (Split-Path $targetFile -Parent) -Force -ErrorAction Stop | Out-Null
+                } catch {
+                    pLog "ERROR — Could not create target directory: $($_.Exception.Message)" -Level ERROR -LogFile $masterLog
+                    $result.Status       = 'Exception'
+                    $result.TargetAction = 'Failed'
+                    return $result
+                }
             }
 
             switch ($onCompleteValue) {
                 'Nothing' {
-                    Copy-Item -Path $sourceFile.FullName -Destination $targetFile -Force
-                    $result.TargetAction = 'CopiedSource'
-                    $result.SourceAction = 'Unchanged'
-                    $result.TargetSize   = $sourceFile.Length
-                    pLog "Source copied to target (no-savings / Nothing): $relativePath" -Level INFO -LogFile $masterLog
+                    if ($whatIf) {
+                        pLog "WhatIf: Would copy source to target (no-savings / Nothing): $relativePath" -Level INFO -LogFile $masterLog
+                        $result.TargetAction = 'WhatIf-Copy'
+                        $result.SourceAction = 'Unchanged'
+                    } else {
+                        Copy-Item -Path $sourceFile.FullName -Destination $targetFile -Force
+                        $result.TargetAction = 'CopiedSource'
+                        $result.SourceAction = 'Unchanged'
+                        $result.TargetSize   = $sourceFile.Length
+                        pLog "Source copied to target (no-savings / Nothing): $relativePath" -Level INFO -LogFile $masterLog
+                    }
                 }
                 'Delete' {
-                    Move-Item -Path $sourceFile.FullName -Destination $targetFile -Force
-                    $result.TargetAction = 'MovedSource'
-                    $result.SourceAction = 'Deleted'
-                    $result.TargetSize   = $sourceFile.Length
-                    pLog "Source moved to target (no-savings / Delete): $relativePath" -Level INFO -LogFile $masterLog
-                    $srcDir = Split-Path $sourceFile.FullName -Parent
-                    if ((Get-ChildItem $srcDir -Force | Measure-Object).Count -eq 0) {
-                        Remove-Item $srcDir -Force
+                    if ($whatIf) {
+                        pLog "WhatIf: Would move source to target (no-savings / Delete): $relativePath" -Level INFO -LogFile $masterLog
+                        $result.TargetAction = 'WhatIf-Move'
+                        $result.SourceAction = 'WhatIf-Delete'
+                    } else {
+                        Move-Item -Path $sourceFile.FullName -Destination $targetFile -Force
+                        $result.TargetAction = 'MovedSource'
+                        $result.SourceAction = 'Deleted'
+                        $result.TargetSize   = $sourceFile.Length
+                        pLog "Source moved to target (no-savings / Delete): $relativePath" -Level INFO -LogFile $masterLog
+                        $srcDir = Split-Path $sourceFile.FullName -Parent
+                        if ((Get-ChildItem $srcDir -Force | Measure-Object).Count -eq 0) {
+                            Remove-Item $srcDir -Force
+                        }
                     }
                 }
                 'Replace' {
@@ -1814,7 +1841,7 @@ $('=' * 80)
     # =========================================================================
     # STEP 8: Export results to CSV (if ExportList = $true)
     # =========================================================================
-    if ($ExportList) {
+    if (-not $NoExportList) {
         $csvPath = Join-Path $LogDirectory "FileList_$sessionStamp.csv"
         $csvRows = [System.Collections.Generic.List[object]]::new()
 
