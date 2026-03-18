@@ -1,5 +1,5 @@
 # MUCUS — Media Universal Compression Utility Script
-<img src="https://github.com/josephOfTheWest/mucus/blob/main/MUCUS_logo.svg" alt="Image of a film reel squeezed by belt spewing mucus" height="250" width="205" />
+<img src="https://github.com/josephOfTheWest/mucus/blob/main/scr/assets/MUCUS_logo.svg" alt="Image of a film reel squeezed by belt spewing mucus" height="250" width="205" />
 
 MUCUS is a collection of scripts that batch re-encode video files to AV1 using FFmpeg, with automatic hardware acceleration detection, parallel encoding, smart resume, and detailed logging. Authored with the help of Claude Code.
 
