@@ -44,13 +44,13 @@
 .PARAMETER Content
     Content type profile that controls all FFmpeg quality/encode parameters:
       General   (default) - Balanced profile suitable for any content from SD to 8K.
-      Sports              - Optimised for fast motion: high-framerate action, low latency
+      Sports              - Optimized for fast motion: high-framerate action, low latency
                             lookahead, aggressive AQ to handle rapid scene changes.
-      Movie               - Optimised for feature film: cinematic quality, strong AQ,
+      Movie               - Optimized for feature film: cinematic quality, strong AQ,
                             high lookahead, good detail retention in dark scenes.
                             Resolution-aware: higher tiers unlock slower presets and
                             stronger AQ (SD through 8K+).
-      Show                - Optimised for recorded TV episodes: efficient compression at
+      Show                - Optimized for recorded TV episodes: efficient compression at
                             broadcast quality, balanced AQ, fast enough for large libraries.
 
     When -CQ is also supplied it overrides the profile's default CQ value.
@@ -146,7 +146,7 @@ PARAMETERS
 
     -Content          <string>  [Default: General]
         Content type profile controlling all FFmpeg quality and encode parameters.
-        Profiles and their optimised defaults (resolved per-file from source resolution):
+        Profiles and their optimized defaults (resolved per-file from source resolution):
 
           General   — Balanced for any content from SD to 8K.
           Sports    — Fast motion: aggressive AQ, moderate lookahead.
@@ -170,7 +170,7 @@ PARAMETERS
           Delete   — Delete source file; remove directory if it becomes empty.
           Replace  — Move encoded output to source directory, delete original.
 
-        Special behaviour when source is already a valid AV1 MKV (no transcode):
+        Special behavior when source is already a valid AV1 MKV (no transcode):
           Nothing  — Copy source to target location.
           Delete   — Move source to target location.
           Replace  — No action; file stays in source directory (already correct
@@ -569,7 +569,7 @@ EXAMPLES
     $contentProfiles = @{
 
         # ── MOVIE ──────────────────────────────────────────────────────────────
-        # Cinematic content: slow motion, fine grain, HDR.  Prioritise quality
+        # Cinematic content: slow motion, fine grain, HDR.  Prioritize quality
         # over encode speed.  Higher resolution = more headroom for compression.
 
         'Movie-SD'  = @{ DefaultCQ=26; DefaultPreset='p5'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=10; Multipass='disabled'
@@ -904,7 +904,7 @@ EXAMPLES
     # Abort if any target files exist but cannot be verified as valid re-encodes
     if ($resumeConflicts.Count -gt 0) {
         Write-Log "ABORT: $($resumeConflicts.Count) file(s) in the target directory could not be verified as valid re-encodes of their source:" -Level ERROR -LogFile $masterLogPath
-        Write-Host "`n[ERROR] Pre-flight check failed — unrecognised file(s) found in target directory:" -ForegroundColor Red
+        Write-Host "`n[ERROR] Pre-flight check failed — unrecognized file(s) found in target directory:" -ForegroundColor Red
         foreach ($conflict in $resumeConflicts) {
             Write-Log $conflict -Level ERROR -LogFile $masterLogPath
             Write-Host $conflict -ForegroundColor Yellow
@@ -1515,7 +1515,7 @@ EXAMPLES
                     # ----------------------------------------------------------
                     # Post-encode: output is not smaller than source.
                     # Remove the oversized encode and apply the no-savings
-                    # OnComplete behaviour (mirrors the pre-encode skip logic).
+                    # OnComplete behavior (mirrors the pre-encode skip logic).
                     # ----------------------------------------------------------
                     Add-Content -Path $fileLogPath -Value "Result    : SUCCESS (no savings — encoded file is not smaller than source)" -Encoding UTF8
                     pLog "SUCCESS-NO-SAVINGS [$relativePath] $(fBytes $result.SourceSize) → $(fBytes $targetSize) ($savings% saved) [$($encodeDuration.ToString('hh\:mm\:ss'))] — reverting to source" -Level WARN -LogFile $masterLog
