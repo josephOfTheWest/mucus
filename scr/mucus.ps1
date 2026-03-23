@@ -30,6 +30,16 @@
     Encoding preset (p1=fastest/worst .. p7=slowest/best).
     Defaults to p5.
 
+.PARAMETER AdjustCQ
+    Integer offset applied to the content profile's default CQ value.
+    Cannot be combined with -CQ. Final value is clamped to 0–51.
+    A positive value increases CQ (lower quality); negative decreases it (higher quality).
+
+.PARAMETER AdjustPreset
+    Integer offset applied to the content profile's default preset number (1–7).
+    Cannot be combined with -Preset. Final value is clamped to p1–p7.
+    A positive value moves toward a slower/better preset; negative toward faster.
+
 .PARAMETER OnComplete
     Action to take on the SOURCE file after a successful encode:
       Nothing  (default) - Leave source file untouched.
@@ -55,6 +65,16 @@
 
     When -CQ is also supplied it overrides the profile's default CQ value.
     When -Preset is also supplied it overrides the profile's default preset.
+    When -AdjustCQ is also supplied it offsets the profile's default CQ value (clamped 0–51).
+    When -AdjustPreset is also supplied it offsets the profile's default preset number (clamped p1–p7).
+
+.PARAMETER Favor
+    Selects between quality-optimized and space-optimized content profile tables.
+      quality  (default) — Standard profiles; prioritize output quality.
+      space              — Space profiles; CQ raised by 4 and preset raised by 1 across all tiers to produce
+                           consistently smaller files at the cost of some quality.
+    -CQ, -AdjustCQ, -Preset, and -AdjustPreset still override or adjust the
+    selected profile's values when supplied.
 
 .EXAMPLE
     . .\mucus.ps1
@@ -98,6 +118,16 @@ function mucus {
         [Parameter(Mandatory = $false)]
         [ValidateSet('p1','p2','p3','p4','p5','p6','p7')]
         [string]$Preset,
+
+        [Parameter(Mandatory = $false)]
+        [int]$AdjustCQ,
+
+        [Parameter(Mandatory = $false)]
+        [int]$AdjustPreset,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('quality','space')]
+        [string]$Favor = 'quality',
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('Nothing','Delete','Replace')]
@@ -162,6 +192,24 @@ PARAMETERS
     -Preset           <string>  [Default: profile value]  Values: p1–p7
         Encoding speed preset. p1 = fastest/lowest quality, p7 = slowest/best.
         Overrides the selected Content profile's default preset when supplied.
+
+    -AdjustCQ         <int>     [Default: none]
+        Integer offset added to the content profile's CQ value for each file.
+        Cannot be combined with -CQ. Final value is clamped to 0–51.
+        Positive = higher CQ (lower quality); negative = lower CQ (higher quality).
+
+    -AdjustPreset     <int>     [Default: none]
+        Integer offset added to the content profile's preset number for each file.
+        Cannot be combined with -Preset. Final value is clamped to p1–p7.
+        Positive = slower/better preset; negative = faster preset.
+
+    -Favor            <string>  [Default: quality]  Values: quality, space
+        Selects the content profile table to use.
+          quality  — Standard profiles; prioritize output quality.
+          space    — Space profiles; CQ raised by 4, preset raised by 1 across all tiers.
+                     Produces consistently smaller files at the cost of some quality.
+        -CQ, -AdjustCQ, -Preset, and -AdjustPreset still override or adjust
+        the selected profile's values when supplied.
 
     -OnComplete       <string>  [Default: Nothing]
         Action to take on the SOURCE file after a successful encode:
@@ -263,6 +311,18 @@ EXAMPLES
         }
         Write-Host "`n    Both -SourceDirectory and -TargetDirectory must be supplied to run."  -ForegroundColor Yellow
         Write-Host "    Run  .\mucus.ps1 -help  for full usage information and examples.`n"    -ForegroundColor Cyan
+        return
+    }
+
+    # Conflict: -CQ and -AdjustCQ are mutually exclusive
+    if ($PSBoundParameters.ContainsKey('CQ') -and $PSBoundParameters.ContainsKey('AdjustCQ')) {
+        Write-Host "[ERROR] -CQ and -AdjustCQ cannot be used together. Use one or the other." -ForegroundColor Red
+        return
+    }
+
+    # Conflict: -Preset and -AdjustPreset are mutually exclusive
+    if ($PSBoundParameters.ContainsKey('Preset') -and $PSBoundParameters.ContainsKey('AdjustPreset')) {
+        Write-Host "[ERROR] -Preset and -AdjustPreset cannot be used together. Use one or the other." -ForegroundColor Red
         return
     }
 
@@ -628,26 +688,86 @@ EXAMPLES
                            Description='General 8K+: mixed 8K+ content, balanced quality at extreme resolution' }
     }
 
+    # =========================================================================
+    # STEP 4b: Space-favor profile table (CQ +4, preset +1 across all tiers)
+    # Lookahead, AQ, and multipass are identical to the quality table above.
+    # Selected when -Favor space is specified.
+    # =========================================================================
+    $contentProfilesSpace = @{
+
+        'Movie-SD'  = @{ DefaultCQ=30; DefaultPreset='p6'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=10; Multipass='disabled'
+                         Description='Movie SD (space): archival film, space-optimised — CQ 30 / p6' }
+        'Movie-HD'  = @{ DefaultCQ=28; DefaultPreset='p7'; RcLookahead=48; SpatialAQ=1; TemporalAQ=1; AQStrength=13; Multipass='qres'
+                         Description='Movie HD (space): 1080p film, space-optimised — CQ 28 / p7' }
+        'Movie-2K'  = @{ DefaultCQ=27; DefaultPreset='p7'; RcLookahead=56; SpatialAQ=1; TemporalAQ=1; AQStrength=14; Multipass='qres'
+                         Description='Movie 2K (space): DCI 2K / QHD cinema, space-optimised — CQ 27 / p7' }
+        'Movie-4K'  = @{ DefaultCQ=26; DefaultPreset='p7'; RcLookahead=64; SpatialAQ=1; TemporalAQ=1; AQStrength=15; Multipass='qres'
+                         Description='Movie 4K (space): UHD/DCI 4K HDR, space-optimised — CQ 26 / p7' }
+        'Movie-8K+' = @{ DefaultCQ=28; DefaultPreset='p7'; RcLookahead=64; SpatialAQ=1; TemporalAQ=1; AQStrength=15; Multipass='qres'
+                         Description='Movie 8K+ (space): beyond DCI 4K, space-optimised — CQ 28 / p7' }
+
+        'Show-SD'   = @{ DefaultCQ=34; DefaultPreset='p5'; RcLookahead=24; SpatialAQ=1; TemporalAQ=1; AQStrength=7;  Multipass='disabled'
+                         Description='Show SD (space): SD broadcast, space-optimised — CQ 34 / p5' }
+        'Show-HD'   = @{ DefaultCQ=36; DefaultPreset='p6'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=8;  Multipass='disabled'
+                         Description='Show HD (space): 1080p broadcast, space-optimised — CQ 36 / p6' }
+        'Show-2K'   = @{ DefaultCQ=35; DefaultPreset='p6'; RcLookahead=40; SpatialAQ=1; TemporalAQ=1; AQStrength=9;  Multipass='disabled'
+                         Description='Show 2K (space): QHD streaming, space-optimised — CQ 35 / p6' }
+        'Show-4K'   = @{ DefaultCQ=32; DefaultPreset='p7'; RcLookahead=48; SpatialAQ=1; TemporalAQ=1; AQStrength=12; Multipass='qres'
+                         Description='Show 4K (space): UHD streaming, space-optimised — CQ 32 / p7' }
+        'Show-8K+'  = @{ DefaultCQ=34; DefaultPreset='p7'; RcLookahead=48; SpatialAQ=1; TemporalAQ=1; AQStrength=12; Multipass='qres'
+                         Description='Show 8K+ (space): future-format streaming, space-optimised — CQ 34 / p7' }
+
+        'Sports-SD'  = @{ DefaultCQ=30; DefaultPreset='p5'; RcLookahead=20; SpatialAQ=1; TemporalAQ=1; AQStrength=9;  Multipass='disabled'
+                          Description='Sports SD (space): fast-motion SD, space-optimised — CQ 30 / p5' }
+        'Sports-HD'  = @{ DefaultCQ=32; DefaultPreset='p6'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=10; Multipass='disabled'
+                          Description='Sports HD (space): 1080p sports, space-optimised — CQ 32 / p6' }
+        'Sports-2K'  = @{ DefaultCQ=31; DefaultPreset='p6'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=11; Multipass='disabled'
+                          Description='Sports 2K (space): QHD sports, space-optimised — CQ 31 / p6' }
+        'Sports-4K'  = @{ DefaultCQ=30; DefaultPreset='p6'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=12; Multipass='disabled'
+                          Description='Sports 4K (space): UHD sports, space-optimised — CQ 30 / p6' }
+        'Sports-8K+' = @{ DefaultCQ=32; DefaultPreset='p6'; RcLookahead=32; SpatialAQ=1; TemporalAQ=1; AQStrength=12; Multipass='disabled'
+                          Description='Sports 8K+ (space): future-format sports, space-optimised — CQ 32 / p6' }
+
+        'General-SD'  = @{ DefaultCQ=32; DefaultPreset='p5'; RcLookahead=24; SpatialAQ=1; TemporalAQ=1; AQStrength=8;  Multipass='disabled'
+                           Description='General SD (space): mixed SD content, space-optimised — CQ 32 / p5' }
+        'General-HD'  = @{ DefaultCQ=34; DefaultPreset='p6'; RcLookahead=40; SpatialAQ=1; TemporalAQ=1; AQStrength=10; Multipass='disabled'
+                           Description='General HD (space): mixed 1080p content, space-optimised — CQ 34 / p6' }
+        'General-2K'  = @{ DefaultCQ=33; DefaultPreset='p6'; RcLookahead=48; SpatialAQ=1; TemporalAQ=1; AQStrength=11; Multipass='disabled'
+                           Description='General 2K (space): mixed QHD content, space-optimised — CQ 33 / p6' }
+        'General-4K'  = @{ DefaultCQ=31; DefaultPreset='p7'; RcLookahead=56; SpatialAQ=1; TemporalAQ=1; AQStrength=13; Multipass='qres'
+                           Description='General 4K (space): mixed UHD content, space-optimised — CQ 31 / p7' }
+        'General-8K+' = @{ DefaultCQ=32; DefaultPreset='p7'; RcLookahead=56; SpatialAQ=1; TemporalAQ=1; AQStrength=13; Multipass='qres'
+                           Description='General 8K+ (space): mixed 8K+ content, space-optimised — CQ 32 / p7' }
+    }
+
     # Validate that every profile entry contains all required keys.
     # A missing key causes a silent $null dereference deep inside the parallel block.
     $requiredProfileKeys = @('DefaultCQ','DefaultPreset','RcLookahead','SpatialAQ','TemporalAQ','AQStrength','Multipass','Description')
-    foreach ($profileKey in $contentProfiles.Keys) {
-        $missingKeys = $requiredProfileKeys | Where-Object { -not $contentProfiles[$profileKey].ContainsKey($_) }
-        if ($missingKeys) {
-            Write-Host "[ERROR] Content profile '$profileKey' is missing required key(s): $($missingKeys -join ', ')" -ForegroundColor Red
-            return
+    foreach ($tbl in @($contentProfiles, $contentProfilesSpace)) {
+        foreach ($profileKey in $tbl.Keys) {
+            $missingKeys = $requiredProfileKeys | Where-Object { -not $tbl[$profileKey].ContainsKey($_) }
+            if ($missingKeys) {
+                Write-Host "[ERROR] Content profile '$profileKey' is missing required key(s): $($missingKeys -join ', ')" -ForegroundColor Red
+                return
+            }
         }
     }
+
+    # Select active profile table based on -Favor
+    $activeProfiles = if ($Favor -eq 'space') { $contentProfilesSpace } else { $contentProfiles }
 
     # Profile selection and encode-arg building happen per-file inside the
     # parallel block (after FFprobe reveals each file's resolution).
     # Capture override flags here so the parallel block can apply them.
     $hasCQOverride     = $PSBoundParameters.ContainsKey('CQ')
     $hasPresetOverride = $PSBoundParameters.ContainsKey('Preset')
+    $hasCQAdjust       = $PSBoundParameters.ContainsKey('AdjustCQ')
+    $hasPresetAdjust   = $PSBoundParameters.ContainsKey('AdjustPreset')
 
     Write-Host "`n[INFO] Content type     : $Content (profile resolved per-file from source resolution)" -ForegroundColor Cyan
-    Write-Host "[INFO] CQ override      : $(if ($hasCQOverride) { $CQ } else { 'none — using profile default' })" -ForegroundColor Cyan
-    Write-Host "[INFO] Preset override  : $(if ($hasPresetOverride) { $Preset } else { 'none — using profile default' })" -ForegroundColor Cyan
+    Write-Host "[INFO] Favor            : $Favor$(if ($Favor -eq 'space') { ' (space profiles active — CQ +4, preset +1)' } else { ' (quality profiles active)' })" -ForegroundColor Cyan
+    Write-Host "[INFO] CQ override      : $(if ($hasCQOverride) { $CQ } elseif ($hasCQAdjust) { "adjust $(if ($AdjustCQ -ge 0) { '+' } else { '' })$AdjustCQ (clamped 0–51)" } else { 'none — using profile default' })" -ForegroundColor Cyan
+    Write-Host "[INFO] Preset override  : $(if ($hasPresetOverride) { $Preset } elseif ($hasPresetAdjust) { "adjust $(if ($AdjustPreset -ge 0) { '+' } else { '' })$AdjustPreset (clamped p1–p7)" } else { 'none — using profile default' })" -ForegroundColor Cyan
 
     $SourceDirectory = (Resolve-Path $SourceDirectory).Path.TrimEnd('\')
     $TargetDirectory = [System.IO.Path]::GetFullPath($TargetDirectory, (Get-Location).Path).TrimEnd('\')
@@ -699,8 +819,9 @@ EXAMPLES
     Write-Log "  HW APIs    : $(if ($apiList) { $apiList } else { 'none detected' })"          -Level INFO -LogFile $masterLogPath
     Write-Log "  AV1 Encs   : $(if ($encList) { $encList } else { 'none' })"                  -Level INFO -LogFile $masterLogPath
     Write-Log "  Content    : $Content (profile resolved per-file from source resolution)" -Level INFO -LogFile $masterLogPath
-    Write-Log "  CQ         : $(if ($hasCQOverride) { "$CQ (CLI override)" } else { 'profile default (per-file)' })" -Level INFO -LogFile $masterLogPath
-    Write-Log "  Preset     : $(if ($hasPresetOverride) { "$Preset (CLI override)" } else { 'profile default (per-file)' })" -Level INFO -LogFile $masterLogPath
+    Write-Log "  Favor      : $Favor$(if ($Favor -eq 'space') { ' (space profiles — CQ +4, preset +1)' } else { ' (quality profiles)' })"    -Level INFO -LogFile $masterLogPath
+    Write-Log "  CQ         : $(if ($hasCQOverride) { "$CQ (CLI override)" } elseif ($hasCQAdjust) { "adjust $(if ($AdjustCQ -ge 0) { '+' } else { '' })$AdjustCQ (clamped 0–51)" } else { 'profile default (per-file)' })" -Level INFO -LogFile $masterLogPath
+    Write-Log "  Preset     : $(if ($hasPresetOverride) { "$Preset (CLI override)" } elseif ($hasPresetAdjust) { "adjust $(if ($AdjustPreset -ge 0) { '+' } else { '' })$AdjustPreset (clamped p1–p7)" } else { 'profile default (per-file)' })" -Level INFO -LogFile $masterLogPath
     Write-Log "  OnComplete : $OnComplete"                                 -Level INFO -LogFile $masterLogPath
     Write-Log "  Parallel   : $maxParallel"                                -Level INFO -LogFile $masterLogPath
     Write-Log ('=' * 60)                                                   -Level INFO -LogFile $masterLogPath
@@ -934,11 +1055,15 @@ EXAMPLES
     $p_conflictedFiles = [string[]]$conflictedFiles   # passed as array; rebuilt as HashSet inside parallel
     $p_stackName       = $selectedStack
     $p_contentName     = $Content
-    $p_profiles        = $contentProfiles
+    $p_profiles        = $activeProfiles
     $p_hasCQOverride   = $hasCQOverride
     $p_cqOverride      = $CQ
     $p_hasPresetOvr    = $hasPresetOverride
     $p_presetOverride  = $Preset
+    $p_hasCQAdjust     = $hasCQAdjust
+    $p_cqAdjust        = $AdjustCQ
+    $p_hasPresetAdjust = $hasPresetAdjust
+    $p_presetAdjust    = $AdjustPreset
     $p_cpuFallbackEnc  = $cpuFallbackEnc
     $p_exportError     = $ExportError
     $p_errorLog        = $errorLogPath
@@ -974,6 +1099,10 @@ EXAMPLES
         $cqOverride        = $using:p_cqOverride
         $hasPresetOverride = $using:p_hasPresetOvr
         $presetOverride    = $using:p_presetOverride
+        $hasCQAdjust       = $using:p_hasCQAdjust
+        $cqAdjust          = $using:p_cqAdjust
+        $hasPresetAdjust   = $using:p_hasPresetAdjust
+        $presetAdjust      = $using:p_presetAdjust
         $cpuFallbackEnc    = $using:p_cpuFallbackEnc
         $exportErrorValue  = $using:p_exportError
         $errLogPath        = $using:p_errorLog
@@ -1114,8 +1243,14 @@ EXAMPLES
             $profileKey  = 'General-HD (fallback)'
         }
 
-        $effectiveCQ     = if ($hasCQOverride)     { $cqOverride     } else { $fileProfile.DefaultCQ     }
-        $effectivePreset = if ($hasPresetOverride)  { $presetOverride } else { $fileProfile.DefaultPreset }
+        $effectiveCQ     = if ($hasCQOverride)    { $cqOverride }
+                           elseif ($hasCQAdjust)  { [math]::Max(0, [math]::Min(51, $fileProfile.DefaultCQ + $cqAdjust)) }
+                           else                   { $fileProfile.DefaultCQ }
+
+        $basePresetNum   = [int]($fileProfile.DefaultPreset -replace 'p', '')
+        $effectivePreset = if ($hasPresetOverride)    { $presetOverride }
+                           elseif ($hasPresetAdjust)  { 'p' + [math]::Max(1, [math]::Min(7, $basePresetNum + $presetAdjust)) }
+                           else                       { $fileProfile.DefaultPreset }
 
         # ── Build stack-specific encode args for this file ────────────────────
         $encodeArgs = [System.Collections.Generic.List[string]]::new()
@@ -1277,11 +1412,13 @@ EXAMPLES
         # ----------------------------------------------------------------------
         # Branch C-pre: Pre-encode size prediction
         # Skip files that are very unlikely to yield a smaller output.
-        # Conservative criteria — only flag when highly confident:
-        #   • Source codec is AV1 (already the target codec)
-        #   • Source codec is HEVC or VP9 AND bits-per-pixel < 0.003
-        #     (already efficiently encoded; AV1 rarely beats this)
-        # H.264 and older codecs always proceed to encode.
+        # Thresholds (bpp = bits_per_second / (width × height × fps)):
+        #   • AV1        — always skip (already the target codec)
+        #   • HEVC / VP9 — skip if bpp < 0.010
+        #     (well-compressed modern HEVC/VP9; AV1 cannot reliably beat it)
+        #   • H.264      — skip if bpp < 0.005
+        #     (extremely compressed H.264; too little headroom for AV1 to gain)
+        # All other codecs always proceed to encode.
         # ----------------------------------------------------------------------
         $sourceCodec = $videoStream.codec_name
 
@@ -1314,9 +1451,12 @@ EXAMPLES
         if ($sourceCodec -match '^av1$') {
             $likelyNoSavings = $true
             $noSavingsReason  = "source is already AV1 (codec: $sourceCodec)"
-        } elseif ($sourceCodec -match '^(hevc|vp9)$' -and $srcBpp -gt 0 -and $srcBpp -lt 0.003) {
+        } elseif ($sourceCodec -match '^(hevc|vp9)$' -and $srcBpp -gt 0 -and $srcBpp -lt 0.010) {
             $likelyNoSavings = $true
-            $noSavingsReason  = "source is $sourceCodec with bpp $([math]::Round($srcBpp,6)) — unlikely to yield savings"
+            $noSavingsReason  = "source is $sourceCodec with bpp $([math]::Round($srcBpp,6)) — already efficiently encoded; unlikely to yield savings"
+        } elseif ($sourceCodec -match '^h264$' -and $srcBpp -gt 0 -and $srcBpp -lt 0.005) {
+            $likelyNoSavings = $true
+            $noSavingsReason  = "source is $sourceCodec with bpp $([math]::Round($srcBpp,6)) — already heavily compressed; unlikely to yield savings"
         }
 
         if ($likelyNoSavings) {

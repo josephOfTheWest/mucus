@@ -38,8 +38,11 @@ TARGET_DIR=""
 LOG_DIR="$(pwd)/encode_logs"   # overridden by --log-dir
 CQ=""                          # empty = use profile default
 PRESET=""                      # empty = use profile default
+ADJUST_CQ=""                   # empty = no adjustment; integer offset applied to profile CQ
+ADJUST_PRESET=""               # empty = no adjustment; integer offset applied to profile preset number
 ON_COMPLETE="Nothing"          # Nothing | Delete | Replace
 CONTENT="General"              # General | Sports | Movie | Show
+FAVOR="quality"                # quality | space
 NO_EXPORT_LIST=false           # true suppresses CSV export
 EXPORT_ERROR="NONE"            # NONE | WARN | ERROR
 DRY_RUN=false                  # --dry-run / --what-if
@@ -83,7 +86,7 @@ PARAMETERS
           Show      — TV episodes: efficient compression, large libraries.
 
         Use --cq or --preset alongside --content to override individual
-        profile values.
+        profile values, or --adjust-cq / --adjust-preset to offset them.
 
     --cq  <int>            [Default: profile value]  Range: 0–63
         Constant Quality value for AV1 encoding.
@@ -94,6 +97,26 @@ PARAMETERS
         Encoding speed preset.
         p1 = fastest/lowest quality, p7 = slowest/best.
         Overrides the selected Content profile's default preset when supplied.
+
+    --adjust-cq  <int>     [Default: none]
+        Integer offset added to the content profile's CQ value for each file.
+        Cannot be combined with --cq. Final value is clamped to 0–51.
+        Positive = higher CQ (lower quality); negative = lower CQ (higher quality).
+        Example: profile CQ 24, --adjust-cq 2  →  effective CQ 26.
+
+    --adjust-preset  <int>  [Default: none]
+        Integer offset added to the content profile's preset number for each file.
+        Cannot be combined with --preset. Final value is clamped to p1–p7.
+        Positive = slower/better preset; negative = faster preset.
+        Example: profile p6, --adjust-preset -2  →  effective preset p4.
+
+    --favor  <string>      [Default: quality]  Values: quality, space
+        Selects the content profile table.
+          quality  — Standard profiles; prioritize output quality.
+          space    — Space profiles; CQ raised by 4, preset raised by 1 across all tiers.
+                     Produces consistently smaller files at the cost of some quality.
+        --cq, --adjust-cq, --preset, and --adjust-preset still override or adjust
+        the selected profile's values when supplied.
 
     --on-complete  <string>  [Default: Nothing]
         Action to take on the SOURCE file after a successful encode:
@@ -225,6 +248,20 @@ parse_args() {
             --preset=*)
                 PRESET="${1#*=}"; has_preset=true; shift ;;
 
+            # ── CQ adjustment ──────────────────────────────────────────────
+            --adjust-cq)
+                [[ $# -lt 2 ]] && { printf "${C_RED}[ERROR] '%s' requires a value.\n${C_RESET}" "$1" >&2; exit 1; }
+                ADJUST_CQ="$2"; shift 2 ;;
+            --adjust-cq=*)
+                ADJUST_CQ="${1#*=}"; shift ;;
+
+            # ── Preset adjustment ──────────────────────────────────────────
+            --adjust-preset)
+                [[ $# -lt 2 ]] && { printf "${C_RED}[ERROR] '%s' requires a value.\n${C_RESET}" "$1" >&2; exit 1; }
+                ADJUST_PRESET="$2"; shift 2 ;;
+            --adjust-preset=*)
+                ADJUST_PRESET="${1#*=}"; shift ;;
+
             # ── OnComplete action ──────────────────────────────────────────
             --on-complete|-o)
                 [[ $# -lt 2 ]] && { printf "${C_RED}[ERROR] '%s' requires a value.\n${C_RESET}" "$1" >&2; exit 1; }
@@ -238,6 +275,13 @@ parse_args() {
                 CONTENT="$2"; shift 2 ;;
             --content=*)
                 CONTENT="${1#*=}"; shift ;;
+
+            # ── Favor (quality vs space profiles) ─────────────────────────
+            --favor)
+                [[ $# -lt 2 ]] && { printf "${C_RED}[ERROR] '%s' requires a value.\n${C_RESET}" "$1" >&2; exit 1; }
+                FAVOR="$2"; shift 2 ;;
+            --favor=*)
+                FAVOR="${1#*=}"; shift ;;
 
             # ── Export error log ───────────────────────────────────────────
             --export-error)
@@ -304,6 +348,30 @@ validate_params() {
         fi
     fi
 
+    # adjust-cq must be an integer (may be negative)
+    if [[ -n "$ADJUST_CQ" ]]; then
+        if ! [[ "$ADJUST_CQ" =~ ^-?[0-9]+$ ]]; then
+            errors+=("--adjust-cq  '$ADJUST_CQ' is invalid. Must be a positive or negative integer.")
+        fi
+    fi
+
+    # adjust-preset must be an integer (may be negative)
+    if [[ -n "$ADJUST_PRESET" ]]; then
+        if ! [[ "$ADJUST_PRESET" =~ ^-?[0-9]+$ ]]; then
+            errors+=("--adjust-preset  '$ADJUST_PRESET' is invalid. Must be a positive or negative integer.")
+        fi
+    fi
+
+    # Conflict: --cq and --adjust-cq are mutually exclusive
+    if [[ -n "$CQ" && -n "$ADJUST_CQ" ]]; then
+        errors+=("--cq and --adjust-cq cannot be used together. Use one or the other.")
+    fi
+
+    # Conflict: --preset and --adjust-preset are mutually exclusive
+    if [[ -n "$PRESET" && -n "$ADJUST_PRESET" ]]; then
+        errors+=("--preset and --adjust-preset cannot be used together. Use one or the other.")
+    fi
+
     # Preset values
     if [[ -n "$PRESET" ]]; then
         case "$PRESET" in
@@ -327,6 +395,14 @@ validate_params() {
         General|Sports|Movie|Show) ;;
         *)
             errors+=("--content  '$CONTENT' is invalid. Valid values: General Sports Movie Show.")
+            ;;
+    esac
+
+    # Favor values
+    case "$FAVOR" in
+        quality|space) ;;
+        *)
+            errors+=("--favor  '$FAVOR' is invalid. Valid values: quality space.")
             ;;
     esac
 
@@ -572,6 +648,8 @@ mucus() {
     # global has_cq=true but $CQ empty; checking -n catches that correctly.
     local HAS_CQ_OVERRIDE=false;     [[ -n "$CQ"     ]] && HAS_CQ_OVERRIDE=true
     local HAS_PRESET_OVERRIDE=false; [[ -n "$PRESET" ]] && HAS_PRESET_OVERRIDE=true
+    local HAS_CQ_ADJUST=false;     [[ -n "$ADJUST_CQ"     ]] && HAS_CQ_ADJUST=true
+    local HAS_PRESET_ADJUST=false; [[ -n "$ADJUST_PRESET" ]] && HAS_PRESET_ADJUST=true
 
     # ── Resolve paths ──────────────────────────────────────────────────────
     SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
@@ -1033,6 +1111,20 @@ mucus() {
         [General-8K+]="General 8K+: mixed 8K+ content, balanced quality at extreme resolution"
     )
 
+    # ── Space-favor overrides (CQ +4, preset +1; all other params identical) ─
+    local -A PROF_SPACE_CQ=(
+        [Movie-SD]=30  [Movie-HD]=28  [Movie-2K]=27  [Movie-4K]=26  [Movie-8K+]=28
+        [Show-SD]=34   [Show-HD]=36   [Show-2K]=35   [Show-4K]=32   [Show-8K+]=34
+        [Sports-SD]=30 [Sports-HD]=32 [Sports-2K]=31 [Sports-4K]=30 [Sports-8K+]=32
+        [General-SD]=32 [General-HD]=34 [General-2K]=33 [General-4K]=31 [General-8K+]=32
+    )
+    local -A PROF_SPACE_PRESET=(
+        [Movie-SD]=p6  [Movie-HD]=p7  [Movie-2K]=p7  [Movie-4K]=p7  [Movie-8K+]=p7
+        [Show-SD]=p5   [Show-HD]=p6   [Show-2K]=p6   [Show-4K]=p7   [Show-8K+]=p7
+        [Sports-SD]=p5 [Sports-HD]=p6 [Sports-2K]=p6 [Sports-4K]=p6 [Sports-8K+]=p6
+        [General-SD]=p5 [General-HD]=p6 [General-2K]=p6 [General-4K]=p7 [General-8K+]=p7
+    )
+
     # ── Validate all 20 profiles have all 8 required field entries ────────
     # A missing entry produces a silent empty-string lookup in the encode
     # block, which is the same silent-failure risk as PS1's $null dereference.
@@ -1046,6 +1138,7 @@ mucus() {
     local -a required_field_arrays=(
         PROF_CQ PROF_PRESET PROF_LOOKAHEAD PROF_SPATIAL_AQ
         PROF_TEMPORAL_AQ PROF_AQ_STRENGTH PROF_MULTIPASS PROF_DESC
+        PROF_SPACE_CQ PROF_SPACE_PRESET
     )
 
     local profile_key field_array missing_fields=()
@@ -1071,10 +1164,16 @@ mucus() {
     # ── Log content/override settings (mirrors ps1 lines 648–650) ────────
     printf "\n${C_CYAN}[INFO] Content type     : %s (profile resolved per-file from source resolution)\n${C_RESET}" \
         "$CONTENT"
+    printf "${C_CYAN}[INFO] Favor            : %s\n${C_RESET}" \
+        "$( [[ "$FAVOR" == space ]] && printf "space (space profiles active — CQ +4, preset +1)" || printf "quality (quality profiles active)" )"
     printf "${C_CYAN}[INFO] CQ override      : %s\n${C_RESET}" \
-        "$( [[ "$HAS_CQ_OVERRIDE"     == true ]] && printf "%s" "$CQ"     || printf "none — using profile default" )"
+        "$( if [[ "$HAS_CQ_OVERRIDE" == true ]]; then printf "%s" "$CQ"
+            elif [[ "$HAS_CQ_ADJUST" == true ]]; then printf "adjust %+d (clamped 0–51)" "$ADJUST_CQ"
+            else printf "none — using profile default"; fi )"
     printf "${C_CYAN}[INFO] Preset override  : %s\n${C_RESET}" \
-        "$( [[ "$HAS_PRESET_OVERRIDE" == true ]] && printf "%s" "$PRESET" || printf "none — using profile default" )"
+        "$( if [[ "$HAS_PRESET_OVERRIDE" == true ]]; then printf "%s" "$PRESET"
+            elif [[ "$HAS_PRESET_ADJUST" == true ]]; then printf "adjust %+d (clamped p1–p7)" "$ADJUST_PRESET"
+            else printf "none — using profile default"; fi )"
 
     # =========================================================================
     # SESSION SETUP — directories, master log, lock file, results temp dir
@@ -1107,6 +1206,7 @@ mucus() {
         export ERROR_LOG_PATH
     fi
     export EXPORT_ERROR  # log() in background encode subprocesses reads this
+    export FAVOR
 
     # Results temp directory — one tab-separated record file per processed file.
     # Resume results written here during pre-flight; encode results written here
@@ -1135,9 +1235,15 @@ mucus() {
     log "  HW APIs   : ${api_list:-none detected}"                 INFO "$master_log"
     log "  AV1 Encs  : ${enc_list:-none}"                          INFO "$master_log"
     log "  Content   : $CONTENT (profile resolved per-file)"       INFO "$master_log"
-    log "  CQ        : $( [[ "$HAS_CQ_OVERRIDE"     == true ]] && printf '%s (CLI override)' "$CQ"     || printf 'profile default (per-file)' )" \
+    log "  Favor     : $( [[ "$FAVOR" == space ]] && printf 'space (CQ +4, preset +1)' || printf 'quality' )" \
                                                                    INFO "$master_log"
-    log "  Preset    : $( [[ "$HAS_PRESET_OVERRIDE" == true ]] && printf '%s (CLI override)' "$PRESET" || printf 'profile default (per-file)' )" \
+    log "  CQ        : $( if [[ "$HAS_CQ_OVERRIDE" == true ]]; then printf '%s (CLI override)' "$CQ"
+                          elif [[ "$HAS_CQ_ADJUST" == true ]]; then printf 'adjust %+d (clamped 0–51)' "$ADJUST_CQ"
+                          else printf 'profile default (per-file)'; fi )" \
+                                                                   INFO "$master_log"
+    log "  Preset    : $( if [[ "$HAS_PRESET_OVERRIDE" == true ]]; then printf '%s (CLI override)' "$PRESET"
+                          elif [[ "$HAS_PRESET_ADJUST" == true ]]; then printf 'adjust %+d (clamped p1–p7)' "$ADJUST_PRESET"
+                          else printf 'profile default (per-file)'; fi )" \
                                                                    INFO "$master_log"
     log "  OnComplete: $ON_COMPLETE"                               INFO "$master_log"
     log "  Parallel  : $max_parallel"                              INFO "$master_log"
@@ -1552,11 +1658,40 @@ mucus() {
         fi
 
         local _eff_cq _eff_preset
-        if [[ "$HAS_CQ_OVERRIDE"     == true ]]; then _eff_cq="${CQ}"
-        else                                          _eff_cq="${PROF_CQ[$_prof_key]}"
+        local _base_cq
+        if [[ "${FAVOR:-quality}" == space ]]; then
+            _base_cq="${PROF_SPACE_CQ[$_prof_key]}"
+        else
+            _base_cq="${PROF_CQ[$_prof_key]}"
         fi
-        if [[ "$HAS_PRESET_OVERRIDE" == true ]]; then _eff_preset="${PRESET}"
-        else                                          _eff_preset="${PROF_PRESET[$_prof_key]}"
+
+        if [[ "$HAS_CQ_OVERRIDE" == true ]]; then
+            _eff_cq="${CQ}"
+        elif [[ "$HAS_CQ_ADJUST" == true ]]; then
+            local _adj_cq=$(( _base_cq + ADJUST_CQ ))
+            (( _adj_cq < 0  )) && _adj_cq=0
+            (( _adj_cq > 51 )) && _adj_cq=51
+            _eff_cq="$_adj_cq"
+        else
+            _eff_cq="$_base_cq"
+        fi
+        local _base_preset
+        if [[ "${FAVOR:-quality}" == space ]]; then
+            _base_preset="${PROF_SPACE_PRESET[$_prof_key]}"
+        else
+            _base_preset="${PROF_PRESET[$_prof_key]}"
+        fi
+
+        if [[ "$HAS_PRESET_OVERRIDE" == true ]]; then
+            _eff_preset="${PRESET}"
+        elif [[ "$HAS_PRESET_ADJUST" == true ]]; then
+            local _base_num="${_base_preset#p}"
+            local _adj_preset=$(( _base_num + ADJUST_PRESET ))
+            (( _adj_preset < 1 )) && _adj_preset=1
+            (( _adj_preset > 7 )) && _adj_preset=7
+            _eff_preset="p${_adj_preset}"
+        else
+            _eff_preset="$_base_preset"
         fi
 
         local _lookahead="${PROF_LOOKAHEAD[$_prof_key]}"
@@ -1718,10 +1853,13 @@ mucus() {
 
         # ====================================================================
         # Branch C-pre: Pre-encode skip
-        # Source is unlikely to yield a smaller output when:
-        #   • Source codec is AV1 (already the target codec)
-        #   • Source codec is HEVC or VP9 AND bits-per-pixel < 0.003
-        # H.264 and older codecs always proceed to transcode.
+        # Thresholds (bpp = bits_per_second / (width × height × fps)):
+        #   • AV1       — always skip (already the target codec)
+        #   • HEVC/VP9  — skip if bpp < 0.010
+        #     (well-compressed modern HEVC/VP9; AV1 cannot reliably beat it)
+        #   • H.264     — skip if bpp < 0.005
+        #     (extremely compressed H.264; too little headroom for AV1 to gain)
+        # All other codecs always proceed to transcode.
         # ====================================================================
         local _rfr
         _rfr="$(jq -r \
@@ -1762,11 +1900,20 @@ mucus() {
         elif [[ "$_vid_codec" =~ ^(hevc|vp9)$ ]]; then
             local _bpp_low
             _bpp_low="$(awk -v b="$_bpp" \
-                'BEGIN { print (b+0 > 0 && b+0 < 0.003) ? "true" : "false" }')"
+                'BEGIN { print (b+0 > 0 && b+0 < 0.010) ? "true" : "false" }')"
             if [[ "$_bpp_low" == true ]]; then
                 _no_savings=true
                 _no_savings_reason="source is $_vid_codec with bpp \
-$(awk -v b="$_bpp" 'BEGIN{printf "%.6f",b+0}') — unlikely to yield savings"
+$(awk -v b="$_bpp" 'BEGIN{printf "%.6f",b+0}') — already efficiently encoded; unlikely to yield savings"
+            fi
+        elif [[ "$_vid_codec" =~ ^h264$ ]]; then
+            local _bpp_h264_low
+            _bpp_h264_low="$(awk -v b="$_bpp" \
+                'BEGIN { print (b+0 > 0 && b+0 < 0.005) ? "true" : "false" }')"
+            if [[ "$_bpp_h264_low" == true ]]; then
+                _no_savings=true
+                _no_savings_reason="source is $_vid_codec with bpp \
+$(awk -v b="$_bpp" 'BEGIN{printf "%.6f",b+0}') — already heavily compressed; unlikely to yield savings"
             fi
         fi
 

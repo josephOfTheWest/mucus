@@ -20,7 +20,7 @@ Two implementations are provided, sharing identical encoding logic, content prof
 - **Applies per-file content profiles** based on detected resolution (SD → HD → 2K → 4K → 8K+), with individual tuning for CQ, preset, lookahead, and AQ settings
 - **Resumes interrupted runs** by validating existing targets against their sources before encoding begins
 - **Detects base-name collisions** and disambiguates target names automatically
-- **Skips files predicted to show no savings** (AV1 sources; HEVC/VP9 below a bits-per-pixel threshold)
+- **Skips files predicted to show no savings** (AV1 sources; HEVC/VP9 below bpp `0.010`; heavily compressed H.264 below bpp `0.005`)
 - **Checks post-encode file size** and falls back to the original source when the encode is larger
 - **Applies an OnComplete action** (Nothing / Delete / Replace) to source files after successful encodes
 - **Preserves source timestamps** on all output files
@@ -85,29 +85,28 @@ Each combination of content type and resolution tier has individually tuned enco
 | `Multipass` | Internal resolution quality pass (`disabled` / `qres`) |
 
 **Full profile table:**
-
-| Profile | CQ | Preset | Lookahead | AQ Strength | Multipass |
-|---|---|---|---|---|---|
-| General-SD | 28 | p4 | 24 | 8 | disabled |
-| General-HD | 30 | p5 | 40 | 10 | disabled |
-| General-2K | 29 | p5 | 48 | 11 | disabled |
-| General-4K | 27 | p6 | 56 | 13 | qres |
-| General-8K+ | 28 | p6 | 56 | 13 | qres |
-| Sports-SD | 26 | p4 | 20 | 9 | disabled |
-| Sports-HD | 28 | p5 | 32 | 10 | disabled |
-| Sports-2K | 27 | p5 | 32 | 11 | disabled |
-| Sports-4K | 26 | p5 | 32 | 12 | disabled |
-| Sports-8K+ | 28 | p5 | 32 | 12 | disabled |
-| Movie-SD | 26 | p5 | 32 | 10 | disabled |
-| Movie-HD | 24 | p6 | 48 | 13 | qres |
-| Movie-2K | 23 | p6 | 56 | 14 | qres |
-| Movie-4K | 22 | p7 | 64 | 15 | qres |
-| Movie-8K+ | 24 | p7 | 64 | 15 | qres |
-| Show-SD | 30 | p4 | 24 | 7 | disabled |
-| Show-HD | 32 | p5 | 32 | 8 | disabled |
-| Show-2K | 31 | p5 | 40 | 9 | disabled |
-| Show-4K | 28 | p6 | 48 | 12 | qres |
-| Show-8K+ | 30 | p6 | 48 | 12 | qres |
+| Profile | Quality CQ | Quality Preset | Space CQ | Space Preset | Lookahead | AQ Strength | Multipass |
+|---|---|---|---|---|---|---|---|
+| General-SD | 28 | p4 | 32 | p5 | 24 | 8 | disabled |
+| General-HD | 30 | p5 | 34 | p6 | 40 | 10 | disabled |
+| General-2K | 29 | p5 | 33 | p6 | 48 | 11 | disabled |
+| General-4K | 27 | p6 | 31 | p7 | 56 | 13 | qres |
+| General-8K+ | 28 | p6 | 32 | p7 | 56 | 13 | qres |
+| Sports-SD | 26 | p4 | 30 | p5 | 20 | 9 | disabled |
+| Sports-HD | 28 | p5 | 32 | p6 | 32 | 10 | disabled |
+| Sports-2K | 27 | p5 | 31 | p6 | 32 | 11 | disabled |
+| Sports-4K | 26 | p5 | 30 | p6 | 32 | 12 | disabled |
+| Sports-8K+ | 28 | p5 | 32 | p6 | 32 | 12 | disabled |
+| Movie-SD | 26 | p5 | 30 | p6 | 32 | 10 | disabled |
+| Movie-HD | 24 | p6 | 28 | p7 | 48 | 13 | qres |
+| Movie-2K | 23 | p6 | 27 | p7 | 56 | 14 | qres |
+| Movie-4K | 22 | p7 | 26 | p7 | 64 | 15 | qres |
+| Movie-8K+ | 24 | p7 | 28 | p7 | 64 | 15 | qres |
+| Show-SD | 30 | p4 | 34 | p5 | 24 | 7 | disabled |
+| Show-HD | 32 | p5 | 36 | p6 | 32 | 8 | disabled |
+| Show-2K | 31 | p5 | 35 | p6 | 40 | 9 | disabled |
+| Show-4K | 28 | p6 | 32 | p7 | 48 | 12 | qres |
+| Show-8K+ | 30 | p6 | 34 | p7 | 48 | 12 | qres |
 
 ---
 
@@ -115,12 +114,18 @@ Each combination of content type and resolution tier has individually tuned enco
 
 ### Pre-encode Size Prediction
 
-Before encoding each file, MUCUS checks two conservative criteria to predict whether re-encoding is likely to produce a smaller file:
+Before encoding each file, MUCUS checks per-codec bits-per-pixel (bpp) thresholds to predict whether re-encoding is likely to produce a smaller file. bpp is calculated as `bitrate_bps / (width × height × fps)`.
 
-1. **Source is already AV1** — always skipped (re-encoding AV1→AV1 at the same quality level will not reduce size).
-2. **Source is HEVC or VP9 with a bits-per-pixel (bpp) value below `0.003`** — already efficiently encoded; AV1 rarely beats this threshold.
+| Codec | Threshold | Reasoning |
+|---|---|---|
+| AV1 | Always skip | Already the target codec; re-encoding at the same quality will not reduce size |
+| HEVC, VP9 | `bpp < 0.010` | Well-compressed modern HEVC/VP9; AV1 cannot reliably produce a smaller file at profile quality levels |
+| H.264 | `bpp < 0.005` | Extremely compressed H.264; too little data headroom for AV1 to improve on |
+| All others | Never skip | MPEG-2, ProRes, etc. always proceed |
 
-All other codecs (H.264, MPEG-2, etc.) always proceed to encode. Files matching either criterion are marked `Skipped-LikelyNoSavings` and the `OnComplete` action is applied directly to the source (copy, move, or no-op), consistent with the post-encode no-savings behavior.
+Files matching a skip criterion are marked `Skipped-LikelyNoSavings` and the `OnComplete` action is applied directly to the source (copy, move, or no-op), consistent with the post-encode no-savings behavior.
+
+> **Note:** When FFprobe cannot determine a bitrate for a file, the bpp check is bypassed and the file proceeds to encode.
 
 ### Post-encode Size Check
 
@@ -249,7 +254,7 @@ Selects the content type profile. See [Content Profiles](#content-profiles).
 | `Movie` | Optimized for feature film: high lookahead, strong AQ, resolution-aware quality |
 | `Show` | Optimized for TV episodes: efficient compression for large libraries |
 
-Use `-CQ` or `-Preset` alongside `-Content` to override individual profile values.
+Use `-CQ` or `-Preset` alongside `-Content` to override individual profile values, or `-AdjustCQ` / `-AdjustPreset` to offset them.
 
 ---
 
@@ -267,6 +272,43 @@ Recommended ranges:
 #### `-Preset` `<string>` — Default: profile value — Values: `p1`–`p7`
 
 Encoding speed preset. `p1` is the fastest (lowest quality/compression). `p7` is the slowest (best quality/compression ratio).
+
+---
+
+#### `-AdjustCQ` `<int>` — Default: none — CQ clamped to `0`–`51`
+
+Integer offset added to the content profile's default CQ value on a per-file basis. Cannot be combined with `-CQ`.
+
+- A **positive** value increases CQ (reduces quality, smaller files).
+- A **negative** value decreases CQ (improves quality, larger files).
+- The final CQ is clamped to `0`–`51`.
+
+Example: Movie-HD profile sets CQ 24. `-AdjustCQ 2` → effective CQ 26.
+
+---
+
+#### `-AdjustPreset` `<int>` — Default: none — Preset clamped to `p1`–`p7`
+
+Integer offset added to the content profile's default preset number on a per-file basis. Cannot be combined with `-Preset`.
+
+- A **positive** value moves toward a slower/better preset.
+- A **negative** value moves toward a faster preset.
+- The final preset number is clamped to `1`–`7`.
+
+Example: Movie-HD profile sets Preset p6. `-AdjustPreset -2` → effective Preset p4.
+
+---
+
+#### `-Favor` `<string>` — Default: `quality` — Values: `quality`, `space`
+
+Selects the content profile table used for the run.
+
+| Value | Effect |
+|---|---|
+| `quality` | Standard profiles — prioritize output quality (default) |
+| `space` | Space profiles — CQ raised by 4 and preset raised by 1 across all tiers; produces consistently smaller files at the cost of some quality |
+
+`-CQ`, `-AdjustCQ`, `-Preset`, and `-AdjustPreset` still override or offset the selected profile's values when supplied alongside `-Favor`.
 
 ---
 
@@ -379,6 +421,18 @@ mucus -SourceDirectory "D:\Videos" -TargetDirectory "E:\Archive" -NoExportList
 
 # Show built-in help
 mucus -help
+
+# Movie library — use profile quality but nudge CQ tighter by 2 stops
+mucus -SourceDirectory "D:\Movies" -TargetDirectory "E:\Archive\Movies" `
+      -Content Movie -AdjustCQ -2
+
+# Show library — bump preset one step slower for better compression
+mucus -SourceDirectory "D:\TV" -TargetDirectory "E:\Archive\TV" `
+      -Content Show -AdjustPreset 1
+
+# Re-encode a large library prioritizing storage savings over maximum quality
+mucus -SourceDirectory "D:\TV" -TargetDirectory "E:\Archive\TV" `
+      -Content Show -Favor space
 ```
 
 ---
@@ -466,7 +520,7 @@ Selects the content type profile. See [Content Profiles](#content-profiles).
 | `Movie` | Optimized for feature film: high lookahead, strong AQ, resolution-aware quality |
 | `Show` | Optimized for TV episodes: efficient compression for large libraries |
 
-Use `--cq` or `--preset` alongside `--content` to override individual profile values.
+Use `--cq` or `--preset` alongside `--content` to override individual profile values, or `--adjust-cq` / `--adjust-preset` to offset them.
 
 ---
 
@@ -484,6 +538,43 @@ Recommended ranges:
 #### `--preset`, `-p` `<string>` — Default: profile value — Values: `p1`–`p7`
 
 Encoding speed preset. `p1` is the fastest (lowest quality/compression). `p7` is the slowest (best quality/compression ratio).
+
+---
+
+#### `--adjust-cq` `<int>` — Default: none — CQ clamped to `0`–`51`
+
+Integer offset added to the content profile's default CQ value on a per-file basis. Cannot be combined with `--cq`.
+
+- A **positive** value increases CQ (reduces quality, smaller files).
+- A **negative** value decreases CQ (improves quality, larger files).
+- The final CQ is clamped to `0`–`51`.
+
+Example: Movie-HD profile sets CQ 24. `--adjust-cq 2` → effective CQ 26.
+
+---
+
+#### `--adjust-preset` `<int>` — Default: none — Preset clamped to `p1`–`p7`
+
+Integer offset added to the content profile's default preset number on a per-file basis. Cannot be combined with `--preset`.
+
+- A **positive** value moves toward a slower/better preset.
+- A **negative** value moves toward a faster preset.
+- The final preset number is clamped to `1`–`7`.
+
+Example: Movie-HD profile sets Preset p6. `--adjust-preset -2` → effective Preset p4.
+
+---
+
+#### `--favor` `<string>` — Default: `quality` — Values: `quality`, `space`
+
+Selects the content profile table used for the run.
+
+| Value | Effect |
+|---|---|
+| `quality` | Standard profiles — prioritize output quality (default) |
+| `space` | Space profiles — CQ raised by 4 and preset raised by 1 across all tiers; produces consistently smaller files at the cost of some quality |
+
+`--cq`, `--adjust-cq`, `--preset`, and `--adjust-preset` still override or offset the selected profile's values when supplied alongside `--favor`.
 
 ---
 
@@ -593,6 +684,18 @@ All output files are written to a timestamped subdirectory of `--log-dir` (e.g. 
 
 # Show built-in help
 ./mucus.sh --help
+
+# Movie library — use profile quality but nudge CQ tighter by 2 stops
+./mucus.sh --source /media/Movies --target /archive/Movies \
+           --content Movie --adjust-cq -2
+
+# Show library — bump preset one step slower for better compression
+./mucus.sh --source /media/TV --target /archive/TV \
+           --content Show --adjust-preset 1
+
+# Re-encode a large library prioritizing storage savings over maximum quality
+./mucus.sh --source /media/TV --target /archive/TV \
+           --content Show --favor space
 ```
 
 ---
