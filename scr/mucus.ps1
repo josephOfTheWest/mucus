@@ -1631,8 +1631,16 @@ EXAMPLES
                     Add-Content -Path $fileLogPath -Value $ffmpegOutput -Encoding UTF8
                 }
             } finally {
-                if (Test-Path $tmpStdout) { Remove-Item $tmpStdout -Force }
-                if (Test-Path $tmpStderr) { Remove-Item $tmpStderr -Force }
+                # Start-Process -RedirectStandard* can hold OS handles briefly after
+                # -Wait returns.  Retry deletion a few times before giving up.
+                foreach ($tmpFile in @($tmpStdout, $tmpStderr)) {
+                    if (-not $tmpFile -or -not (Test-Path $tmpFile)) { continue }
+                    $retries = 5
+                    while ($retries-- -gt 0) {
+                        try   { Remove-Item $tmpFile -Force -ErrorAction Stop; break }
+                        catch { if ($retries -gt 0) { Start-Sleep -Milliseconds 200 } }
+                    }
+                }
             }
 
             $encodeDuration = (Get-Date) - $encodeStart
