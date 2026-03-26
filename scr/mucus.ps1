@@ -1684,6 +1684,57 @@ EXAMPLES
 
             Add-Content -Path $fileLogPath -Value "---`nExit code : $($proc.ExitCode)`nDuration  : $($encodeDuration.ToString('hh\:mm\:ss'))" -Encoding UTF8
 
+            # ------------------------------------------------------------------
+            # Hwaccel decode retry: if the encode failed and the output suggests
+            # a mid-stream format change that broke the hardware decode filter
+            # graph, retry without the hwaccel decode prefix.
+            # ------------------------------------------------------------------
+            if ($proc.ExitCode -ne 0 -and $decodeArgs.Count -gt 0 -and
+                ($proc.ExitCode -eq -40 -or
+                 $ffmpegOutput -match 'hwaccel changed|reinitializing filters|Error reinitializing')) {
+
+                pLog "WARN [$relativePath] — FFmpeg exited $($proc.ExitCode) (hwaccel filter graph error); retrying without hardware decode" -Level WARN -LogFile $masterLog
+                Add-Content -Path $fileLogPath -Value "`n--- Retry (software decode) ---" -Encoding UTF8
+
+                # Remove any partial output left by the failed attempt
+                if (Test-Path $targetFile) { Remove-Item $targetFile -Force -ErrorAction SilentlyContinue }
+
+                # Strip the leading $decodeArgs elements to get software-decode args
+                $ffArgsSoftware = $ffArgs[$decodeArgs.Count..($ffArgs.Count - 1)]
+
+                $retryStart = Get-Date
+                $tmpStdout2 = [System.IO.Path]::GetTempFileName()
+                $tmpStderr2 = [System.IO.Path]::GetTempFileName()
+                try {
+                    $proc = Start-Process -FilePath $ffmpegPath `
+                                          -ArgumentList $ffArgsSoftware `
+                                          -RedirectStandardOutput $tmpStdout2 `
+                                          -RedirectStandardError  $tmpStderr2 `
+                                          -NoNewWindow -Wait -PassThru
+
+                    $retryStdout = $null
+                    $retryStderr = $null
+                    try { $retryStdout = Get-Content $tmpStdout2 -Raw -ErrorAction Stop } catch {}
+                    try { $retryStderr = Get-Content $tmpStderr2 -Raw -ErrorAction Stop } catch {}
+                    $ffmpegOutput = (@($retryStdout, $retryStderr) | Where-Object { $_ }) -join "`n"
+                    if ($ffmpegOutput) {
+                        Add-Content -Path $fileLogPath -Value $ffmpegOutput -Encoding UTF8
+                    }
+                } finally {
+                    foreach ($tmpFile in @($tmpStdout2, $tmpStderr2)) {
+                        if (-not $tmpFile -or -not (Test-Path $tmpFile)) { continue }
+                        $retries = 5
+                        while ($retries-- -gt 0) {
+                            try   { Remove-Item $tmpFile -Force -ErrorAction Stop; break }
+                            catch { if ($retries -gt 0) { Start-Sleep -Milliseconds 200 } }
+                        }
+                    }
+                }
+
+                $encodeDuration = (Get-Date) - $retryStart
+                Add-Content -Path $fileLogPath -Value "---`nExit code : $($proc.ExitCode)`nDuration  : $($encodeDuration.ToString('hh\:mm\:ss'))" -Encoding UTF8
+            }
+
             if ($proc.ExitCode -eq 0 -and (Test-Path $targetFile)) {
 
                 $targetSize        = (Get-Item $targetFile).Length

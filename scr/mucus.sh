@@ -2057,6 +2057,46 @@ $(awk -v b="$_bpp" 'BEGIN{printf "%.6f",b+0}') — already heavily compressed; u
         _ff_out="$(cat "$_tmp_out" "$_tmp_err" 2>/dev/null || true)"
         rm -f "$_tmp_out" "$_tmp_err"
 
+        # ------------------------------------------------------------------
+        # Hwaccel decode retry: if the encode failed and output suggests a
+        # mid-stream format change that broke the hardware decode filter
+        # graph, retry without the hwaccel decode prefix.
+        # ------------------------------------------------------------------
+        if (( _enc_exit != 0 )) && (( ${#hw_decode_args[@]} > 0 )) &&
+           { (( _enc_exit == -40 )) || [[ "$_ff_out" =~ (hwaccel\ changed|reinitializing\ filters|Error\ reinitializing) ]]; }; then
+
+            log "WARN [$_rel_path] — FFmpeg exited $_enc_exit (hwaccel filter graph error); retrying without hardware decode" \
+                WARN "$master_log"
+            printf '\n--- Retry (software decode) ---\n' >> "$_file_log"
+
+            # Remove any partial output left by the failed attempt
+            rm -f "$_tgt_file"
+
+            # Strip hw_decode_args from the front of _ff_args
+            local -a _ff_args_sw=("${_ff_args[@]:${#hw_decode_args[@]}}")
+
+            local _tmp_out2 _tmp_err2
+            _tmp_out2="$(mktemp)"
+            _tmp_err2="$(mktemp)"
+            local _retry_start _retry_exit=0
+            _retry_start="$(date +%s)"
+            "$ffmpeg_bin" "${_ff_args_sw[@]}" > "$_tmp_out2" 2> "$_tmp_err2" || _retry_exit=$?
+            local _retry_end; _retry_end="$(date +%s)"
+            _enc_dur_s=$(( _retry_end - _retry_start ))
+            printf -v _enc_dur '%02d:%02d:%02d' \
+                $(( _enc_dur_s / 3600 )) \
+                $(( (_enc_dur_s % 3600) / 60 )) \
+                $(( _enc_dur_s % 60 ))
+
+            { cat "$_tmp_out2"; cat "$_tmp_err2"; } >> "$_file_log" 2>/dev/null
+            printf -- '---\nExit code : %d\nDuration  : %s\n' \
+                "$_retry_exit" "$_enc_dur" >> "$_file_log"
+
+            _ff_out="$(cat "$_tmp_out2" "$_tmp_err2" 2>/dev/null || true)"
+            rm -f "$_tmp_out2" "$_tmp_err2"
+            _enc_exit="$_retry_exit"
+        fi
+
         if (( _enc_exit == 0 )) && [[ -f "$_tgt_file" ]]; then
 
             _r_tgt_size="$(_file_size "$_tgt_file")"
