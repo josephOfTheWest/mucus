@@ -1159,9 +1159,31 @@ EXAMPLES
         $srcExtP     = $sourceFile.Extension.TrimStart('.').ToLower()
         $targetName  = if ($conflictedSet.Contains($sourceFile.FullName)) { "$baseName-($srcExtP).mkv" } else { "$baseName.mkv" }
         $targetFile  = Join-Path $targetDir $targetName
-        $relativeLogDir = if ($relativeDir) { Join-Path $relativeDir $baseName } else { $baseName }
+        # Build log paths, guarding against Windows MAX_PATH (260 chars).
+        # $baseName appears in both the log subdirectory and the log filename, so
+        # long names on deep source trees can easily exceed the limit.
+        # Layer 1 — cap baseName at 80 chars; append an 8-char hex hash for uniqueness.
+        $logBaseName = if ($baseName.Length -le 80) {
+            $baseName
+        } else {
+            $h = [System.Math]::Abs($baseName.GetHashCode()).ToString('x8')
+            $baseName.Substring(0, 71) + '_' + $h
+        }
+        $relativeLogDir = if ($relativeDir) { Join-Path $relativeDir $logBaseName } else { $logBaseName }
         $fileLogDir     = Join-Path $logRoot $relativeLogDir
-        $fileLogPath    = Join-Path $fileLogDir "${baseName}_encode_$sessionId.log"
+        $fileLogPath    = Join-Path $fileLogDir "${logBaseName}_encode_$sessionId.log"
+
+        # Layer 2 — if the path still exceeds MAX_PATH (very deep source tree),
+        # fall back to a flat file directly under the log root.
+        if ($fileLogPath.Length -gt 259) {
+            $pathHash    = [System.Math]::Abs($relativePath.GetHashCode()).ToString('x8')
+            $fileLogDir  = $logRoot
+            $fileLogPath = Join-Path $logRoot "${logBaseName}_${pathHash}_encode_$sessionId.log"
+            if ($fileLogPath.Length -gt 259) {
+                $fileLogPath = Join-Path $logRoot "${pathHash}_encode_$sessionId.log"
+            }
+            pLog "WARN [$relativePath] — Log path exceeded MAX_PATH; using flat fallback: $(Split-Path $fileLogPath -Leaf)" -Level WARN -LogFile $masterLog
+        }
 
         # Result record
         $result = [ordered]@{
