@@ -1162,11 +1162,23 @@ EXAMPLES
         # Build log paths, guarding against Windows MAX_PATH (260 chars).
         # $baseName appears in both the log subdirectory and the log filename, so
         # long names on deep source trees can easily exceed the limit.
-        # Layer 1 — cap baseName at 80 chars; append an 8-char hex hash for uniqueness.
+        #
+        # MD5 is used (not GetHashCode) because:
+        #   • GetHashCode() is randomised per-process in .NET 5+ / PS7, so the
+        #     same name would produce a different hash on every run.
+        #   • GetHashCode() can collide for strings that share a long common prefix
+        #     and differ only at the end (e.g. Episode.01 vs Episode.02 after the
+        #     truncation point), defeating the uniqueness guarantee.
+        #   • MD5 is deterministic and has negligible collision probability for
+        #     names that are merely similar.
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+
+        # Layer 1 — cap baseName at 80 chars; append an 8-char MD5 prefix for uniqueness.
         $logBaseName = if ($baseName.Length -le 80) {
             $baseName
         } else {
-            $h = [System.Math]::Abs($baseName.GetHashCode()).ToString('x8')
+            $hashBytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($baseName))
+            $h = ($hashBytes[0..3] | ForEach-Object { $_.ToString('x2') }) -join ''
             $baseName.Substring(0, 71) + '_' + $h
         }
         $relativeLogDir = if ($relativeDir) { Join-Path $relativeDir $logBaseName } else { $logBaseName }
@@ -1176,7 +1188,8 @@ EXAMPLES
         # Layer 2 — if the path still exceeds MAX_PATH (very deep source tree),
         # fall back to a flat file directly under the log root.
         if ($fileLogPath.Length -gt 259) {
-            $pathHash    = [System.Math]::Abs($relativePath.GetHashCode()).ToString('x8')
+            $hashBytes   = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($relativePath))
+            $pathHash    = ($hashBytes[0..3] | ForEach-Object { $_.ToString('x2') }) -join ''
             $fileLogDir  = $logRoot
             $fileLogPath = Join-Path $logRoot "${logBaseName}_${pathHash}_encode_$sessionId.log"
             if ($fileLogPath.Length -gt 259) {
@@ -1184,6 +1197,8 @@ EXAMPLES
             }
             pLog "WARN [$relativePath] — Log path exceeded MAX_PATH; using flat fallback: $(Split-Path $fileLogPath -Leaf)" -Level WARN -LogFile $masterLog
         }
+
+        $md5.Dispose()
 
         # Result record
         $result = [ordered]@{
